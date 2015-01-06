@@ -1,0 +1,85 @@
+#!/usr/bin/python2.7
+
+import xcb
+from xcb.xproto import *
+
+import xcb.randr as RandR
+from xcb.randr import NotifyMask, ScreenChangeNotifyEvent
+
+import subprocess
+import os
+
+def configure_displays():
+    proc = subprocess.Popen(["xrandr"], stdout=subprocess.PIPE, shell=True)
+    out, err = proc.communicate()
+
+    connected_displays = map(lambda x: x.split()[0], filter(lambda x: " connected" in x, out.split('\n')))
+
+    display_config = {
+            "DP-0": "1920x1080",
+            "DP-2": "2880x1800 {viewportin=1920x1200}",
+            "HDMI-0": "1920x1080"
+            }
+
+    display_order = ["DP-0", "DP-2", "HDMI-0"]
+
+    padding = 0
+    final_config = {}
+    for disp in display_order:
+        if disp in connected_displays:
+            opts = display_config[disp].split()
+            opts.insert(1, "+%d+0" % padding)
+            final_config[disp] = " ".join(opts)
+            padding += 1920
+
+    command_opts = 'nvidia-settings --assign CurrentMetaMode="' + ", ".join(["%s: %s" % (key, val) for (key, val) in final_config.iteritems()]) + '"'
+    os.system(command_opts)
+
+
+def startup():
+    """Hook up XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE"""
+    # In the xcb.randr module, the result of
+    # key = xcb.ExtensionKey('RANDR')
+    # xcb._add_ext(key, randrExtension, _events, _errors)
+    # is stored in xcb.randr.key and retrieved in some very odd manner =>
+    randr = conn(RandR.key)
+    randr.SelectInput(root.root, NotifyMask.ScreenChange)
+    # may as well flush()
+    conn.flush()
+
+
+
+def run():
+    """Listen for XCB_RANDR_SCREEN_CHANGE_NOTIFY"""
+    currentTimestamp = 0
+    connected = False
+    startup()
+
+    while True:
+        try:
+            event = conn.wait_for_event()
+            connected = True
+        except xcb.ProtocolException, error:
+            print "Protocol error %s received!" % error.__class__.__name__
+            break
+        except Exception, error:
+            print "Unexpected error received: %s" % error.message
+            break
+
+        # Once the ScreenChangeNotify Event arrives, filter down to the one we care about. #
+        if isinstance(event, ScreenChangeNotifyEvent):
+            configure_displays()
+
+
+    # won't really get here, will we?
+    if connected:
+        conn.disconnect()
+
+
+
+conn = xcb.connect()
+setup = conn.get_setup()
+# setup.roots holds a list of screens (just one in our case) #
+root = setup.roots[0]
+
+run()
